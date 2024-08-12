@@ -1,0 +1,117 @@
+from langchain_community.llms import Ollama
+import gradio as gr
+import json
+import whisper
+import torch
+import librosa
+import os
+import signal
+
+# Function to get language based on country
+def get_language(country, file):
+    with open(file, 'r') as f:
+         data = json.load(f)
+    return data[country]
+
+# Function to get few-shot examples
+def get_examples(file):
+     with open (file, 'r') as f:
+         data = f.read()
+     return data
+
+# Function to interact with the language model
+def llm(text, country, number):
+     llm = Ollama(model="mistral")
+     lang = get_language(country, file="utils/country_to_language.json")
+     few_shot = get_examples(file="utils/fewshot_learning.txt")
+     
+     if "time" in text.lower():
+         context = "You are a helpful assistant. You answer questions directly, accurately and concisely."
+     else:
+         context = f"You are a helpful assistant. You answer direcltly concisely and only in {lang}."
+         context += f"For example, {few_shot}"
+     
+     query = text
+     phrases = llm.invoke(context + query)
+     return phrases
+
+
+# Function to shut down the app
+def shutdown():
+    os.kill(os.getpid(), signal.SIGINT)
+
+# Function to transcribe audio using Whisper
+def transcribe_audio(audio_file):
+    model = whisper.load_model("base")
+    
+    # Load the audio using librosa
+    audio, _ = librosa.load(audio_file, sr=16000)
+    
+    # Convert to the expected format for Whisper
+    audio = whisper.pad_or_trim(audio)
+    mel = whisper.log_mel_spectrogram(audio).to(model.device)
+    
+    options = whisper.DecodingOptions(fp16=False)
+    result = whisper.decode(model, mel, options)
+    
+    return result.text
+
+# Function to process inputs and send to LLM
+def process_inputs(text, audio, country, num):
+    transcribed_text = ""
+    if audio:
+        transcribed_text = transcribe_audio(audio)
+        # If there's also text input, combine it with the transcribed text
+        final_text = transcribed_text if not text else text + " " + transcribed_text
+    else:
+        final_text = text
+
+    if final_text:
+        response = llm(final_text, country, num)
+        return transcribed_text, response
+    else:
+        return "", "No input provided."
+
+# Gradio Interface
+with gr.Blocks(theme=gr.themes.Soft()) as demo:
+    gr.Markdown("# Assistant for Travelers")
+    gr.Markdown("What do you want to do? Order food, ask for directions, buy tickets?")
+    gr.Markdown("Record audio or enter text")
+    
+    with gr.Row():
+        with gr.Column():
+            text = gr.Textbox(label="Enter text", placeholder="Order food, ask for directions, etc.")
+        with gr.Column():
+            audio = gr.Audio(sources=["microphone"], label="Record your voice", type="filepath", max_length=20)
+    with gr.Row():
+        country = gr.Radio(["United States", "France", "Germany", "Italy", "Spain"], label="Location", info="Where are you traveling?")
+        num = gr.Slider(0, 20, value=5, step=1, info="How many phrases?", label="Number of phrases")
+    with gr.Row():
+        with gr.Column():
+            response = gr.Button("Generate response", variant="primary")
+        with gr.Column():
+            clear = gr.Button("Clear")
+        with gr.Column():
+            shutdown_button = gr.Button("Shutdown App")
+    with gr.Row():
+        transcription_out = gr.Textbox(label="Transcribed Audio")
+        out = gr.Textbox(label="LLM Response")
+    
+    # Process inputs and update the transcription and LLM response boxes
+    response.click(fn=process_inputs, inputs=[text, audio, country, num], outputs=[transcription_out, out])
+
+    # Clear button functionality
+    #clear.click(lambda: "", [text, audio, transcription_out, out], [text, audio, transcription_out, out])
+
+    # Clear button functionality
+# Clear button functionality
+    clear.click(fn=lambda text, audio, transcription_out, out: ("", None, "", ""), 
+            inputs=[text, audio, transcription_out, out], 
+            outputs=[text, audio, transcription_out, out])
+
+
+    # Shutdown button functionality
+    shutdown_button.click(fn=shutdown, inputs=[], outputs=[])
+
+# Launch the Gradio app
+demo.launch(share=False, debug=False)
